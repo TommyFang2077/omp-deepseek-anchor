@@ -26,12 +26,18 @@ function message(role: "user" | "assistant") {
 }
 
 function harness(
-	options: { model?: TestModel; branch?: unknown[]; tools?: string[] } = {},
+	options: {
+		model?: TestModel;
+		branch?: unknown[];
+		tools?: string[];
+		mode?: "safe" | "dsh";
+	} = {},
 ) {
 	const {
 		model = deepSeek,
 		branch = [],
 		tools = ["bash", "read", "edit", "grep"],
+		mode = "safe",
 	} = options;
 	const handlers = new Map<string, Handler[]>();
 	const toolSets: string[][] = [];
@@ -60,13 +66,16 @@ function harness(
 		},
 	};
 
-	deepSeekAnchor(pi as unknown as ExtensionAPI);
+	deepSeekAnchor(pi as unknown as ExtensionAPI, mode);
 
 	return {
 		ctx,
 		toolSets,
 		warnings,
 		activeTools: () => activeTools,
+		activateTools(...names: string[]) {
+			activeTools = [...new Set([...activeTools, ...names])];
+		},
 		async emit(event: string, payload: unknown = { type: event }) {
 			let result: unknown;
 			for (const handler of handlers.get(event) ?? [])
@@ -120,6 +129,43 @@ describe("two-phase tool catalog", () => {
 		expect(app.activeTools()).toEqual(["bash", "read", "edit", "grep"]);
 	});
 
+	test("late-registered tools stay out of request one and restore later", async () => {
+		const app = harness();
+		await app.emit("session_start");
+		app.activateTools("mcp__late");
+
+		const first = await app.emit("before_provider_request", {
+			type: "before_provider_request",
+			payload: {
+				max_output_tokens: 64000,
+				tools: [
+					{ type: "function", name: "bash" },
+					{ type: "function", name: "read" },
+					{ type: "function", name: "mcp__late" },
+					{ type: "function", function: { name: "edit" } },
+				],
+			},
+		});
+
+		expect(first).toEqual({
+			max_output_tokens: 1024,
+			tools: [
+				{ type: "function", name: "bash" },
+				{ type: "function", name: "read" },
+			],
+		});
+		expect(app.activeTools()).toEqual(["bash", "read"]);
+
+		await app.emit("tool_call", { type: "tool_call", toolName: "read" });
+		expect(app.activeTools()).toEqual([
+			"bash",
+			"read",
+			"edit",
+			"grep",
+			"mcp__late",
+		]);
+	});
+
 	test("a text-only first reply restores tools at agent end", async () => {
 		const app = harness();
 		await app.emit("before_agent_start", { type: "before_agent_start" });
@@ -132,9 +178,16 @@ describe("two-phase tool catalog", () => {
 		await existing.emit("session_start");
 		expect(existing.toolSets).toEqual([]);
 
-		const other = harness({ model: claude });
+		const other = harness({ model: claude, mode: "dsh" });
 		await other.emit("session_start");
 		expect(other.toolSets).toEqual([]);
+		const payload = { instructions: "full prompt", tools: ["bash", "read"] };
+		expect(
+			await other.emit("before_provider_request", {
+				type: "before_provider_request",
+				payload,
+			}),
+		).toBe(payload);
 	});
 
 	test("missing bootstrap tools fails open", async () => {
@@ -158,7 +211,7 @@ describe("first-request output cap", () => {
 		});
 	});
 
-	test("the request hook stops changing payloads after promotion", async () => {
+	test("tools promote on first call, prompt promotes on agent_end", async () => {
 		const app = harness();
 		await app.emit("session_start");
 		const first = await app.emit("before_provider_request", {
@@ -168,6 +221,8 @@ describe("first-request output cap", () => {
 		expect(first).toEqual({ max_output_tokens: 1024, tools: ["bash", "read"] });
 
 		await app.emit("tool_call", { type: "tool_call", toolName: "read" });
+		expect(app.activeTools()).toEqual(["bash", "read", "edit", "grep"]);
+
 		const secondPayload = {
 			max_output_tokens: 64000,
 			tools: ["bash", "read", "edit"],
@@ -176,6 +231,253 @@ describe("first-request output cap", () => {
 			type: "before_provider_request",
 			payload: secondPayload,
 		});
-		expect(second).toBe(secondPayload);
+		expect(second).toEqual({ max_output_tokens: 1024, tools: ["bash", "read", "edit"] });
+
+		await app.emit("agent_end", { type: "agent_end", messages: [] });
+		const thirdPayload = {
+			max_output_tokens: 64000,
+			tools: ["bash", "read", "edit"],
+		};
+		const third = await app.emit("before_provider_request", {
+			type: "before_provider_request",
+			payload: thirdPayload,
+		});
+		expect(third).toBe(thirdPayload);
+	});
+});
+
+describe("DSH compatibility mode", () => {
+	test("uses the Minimal persona and schemas on a Responses bootstrap", async () => {
+		const app = harness({ mode: "dsh" });
+		await app.emit("session_start");
+		const first = await app.emit("before_provider_request", {
+			type: "before_provider_request",
+			payload: {
+				instructions: "full OMP prompt",
+				max_output_tokens: 64000,
+				tools: [
+					{
+						type: "function",
+						name: "bash",
+						description: "verbose bash",
+						parameters: {
+							type: "object",
+							properties: { i: {}, command: {}, env: {} },
+							required: ["i", "command"],
+						},
+					},
+					{
+						type: "function",
+						name: "read",
+						description: "verbose read",
+						parameters: {
+							type: "object",
+							properties: { i: {}, path: {}, offset: {} },
+							required: ["i", "path"],
+						},
+					},
+					{ type: "function", name: "edit" },
+				],
+			},
+		});
+
+		expect(first).toEqual({
+			instructions: "You are a helpful software engineer assistant.",
+			max_output_tokens: 1024,
+			tools: [
+				{
+					type: "function",
+					name: "bash",
+					description: "Run a command in a persistent shell.",
+					parameters: {
+						type: "object",
+						properties: { command: { type: "string" } },
+						required: ["command"],
+					},
+				},
+				{
+					type: "function",
+					name: "read",
+					description: "Read a text file.",
+					parameters: {
+						type: "object",
+						properties: { path: { type: "string" } },
+						required: ["path"],
+					},
+				},
+			],
+		});
+
+		const revised = await app.emit("tool_call", {
+			type: "tool_call",
+			toolCallId: "call-1",
+			toolName: "bash",
+			input: { command: "pwd" },
+		});
+		expect(revised).toEqual({
+			input: {
+				command: "pwd",
+				i: "Bootstrap repository inspection",
+			},
+		});
+		expect(app.activeTools()).toEqual(["bash", "read", "edit", "grep"]);
+
+		const concurrent = await app.emit("tool_call", {
+			type: "tool_call",
+			toolCallId: "call-2",
+			toolName: "read",
+			input: { path: "README.md" },
+		});
+		expect(concurrent).toEqual({
+			input: {
+				path: "README.md",
+				i: "Bootstrap repository inspection",
+			},
+		});
+	});
+	test("Minimal persona persists across tool results until agent_end", async () => {
+		const app = harness({
+			mode: "dsh",
+			model: { ...deepSeek, api: "openai-responses" },
+		});
+		await app.emit("session_start");
+		const first = await app.emit("before_provider_request", {
+			type: "before_provider_request",
+			payload: {
+				instructions: "full OMP prompt",
+				max_output_tokens: 64000,
+				tools: [
+					{
+						type: "function",
+						name: "bash",
+						description: "verbose bash",
+						parameters: {
+							type: "object",
+							properties: { i: {}, command: {} },
+							required: ["i", "command"],
+						},
+					},
+					{ type: "function", name: "edit" },
+				],
+			},
+		});
+
+		expect(first).toMatchObject({
+			instructions: "You are a helpful software engineer assistant.",
+			max_output_tokens: 1024,
+			tools: [
+				{
+					type: "function",
+					name: "bash",
+					description: "Run a command in a persistent shell.",
+					parameters: {
+						type: "object",
+						properties: { command: { type: "string" } },
+						required: ["command"],
+					},
+				},
+			],
+		});
+
+		await app.emit("tool_call", {
+			type: "tool_call",
+			toolCallId: "call-1",
+			toolName: "bash",
+			input: { command: "pwd" },
+		});
+		expect(app.activeTools()).toEqual(["bash", "read", "edit", "grep"]);
+
+		const second = await app.emit("before_provider_request", {
+			type: "before_provider_request",
+			payload: {
+				instructions: "full OMP prompt",
+				max_output_tokens: 64000,
+				tools: [
+					{
+						type: "function",
+						name: "bash",
+						description: "verbose bash",
+						parameters: { type: "object", properties: { i: {}, command: {} } },
+					},
+					{ type: "function", name: "edit" },
+				],
+			},
+		});
+
+		expect(second).toMatchObject({
+			instructions: "You are a helpful software engineer assistant.",
+			max_output_tokens: 1024,
+		});
+		expect((second as { tools: unknown[] }).tools).toHaveLength(2);
+
+		await app.emit("agent_end", { type: "agent_end", messages: [] });
+		const third = await app.emit("before_provider_request", {
+			type: "before_provider_request",
+			payload: {
+				instructions: "full OMP prompt",
+				max_output_tokens: 64000,
+				tools: [{ type: "function", name: "bash" }],
+			},
+		});
+
+		expect(third).toMatchObject({
+			instructions: "full OMP prompt",
+			max_output_tokens: 64000,
+		});
+	});
+
+	test("replaces Chat system messages and nested function schemas", async () => {
+		const app = harness({
+			mode: "dsh",
+			model: { ...deepSeek, api: "openai-completions" },
+		});
+		await app.emit("session_start");
+		const first = await app.emit("before_provider_request", {
+			type: "before_provider_request",
+			payload: {
+				max_tokens: 64000,
+				messages: [
+					{ role: "system", content: "full prompt" },
+					{ role: "developer", content: "workspace rules" },
+					{ role: "user", content: "Inspect the repository." },
+				],
+				tools: [
+					{
+						type: "function",
+						function: {
+							name: "bash",
+							description: "verbose bash",
+							parameters: { type: "object", properties: { i: {}, command: {} } },
+						},
+					},
+					{ type: "function", function: { name: "glob" } },
+				],
+			},
+		});
+
+		expect(first).toEqual({
+			max_tokens: 1024,
+			messages: [
+				{
+					role: "system",
+					content: "You are a helpful software engineer assistant.",
+				},
+				{ role: "user", content: "Inspect the repository." },
+			],
+			tools: [
+				{
+					type: "function",
+					function: {
+						name: "bash",
+						description: "Run a command in a persistent shell.",
+						parameters: {
+							type: "object",
+							properties: { command: { type: "string" } },
+							required: ["command"],
+						},
+					},
+				},
+			],
+		});
 	});
 });

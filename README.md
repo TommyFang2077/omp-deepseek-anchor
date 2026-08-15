@@ -12,6 +12,28 @@ Experimental OMP extension that gives fresh DeepSeek sessions a small first-requ
 
 The extension only activates when the provider or model ID contains `deepseek`. Missing `bash` or `read` fails open: OMP keeps the full catalog and logs one warning.
 
+## Automatic DSH compatibility mode
+
+DSH compatibility remains an explicit safety opt-in, but it can be configured once and then selected automatically for every DeepSeek provider/model. Add this to the environment used to launch OMP (for example, your shell profile):
+
+```sh
+export OMP_DEEPSEEK_ANCHOR_MODE=dsh
+```
+
+Then launch OMP normally:
+
+```sh
+omp --model ccs-codex-deepseek/deepseek-v4-pro \
+  --thinking max \
+  --approval-mode always-ask
+```
+
+The extension still checks the provider/model ID: DeepSeek sessions use `dsh`; non-DeepSeek sessions remain unchanged. Override one launch with `OMP_DEEPSEEK_ANCHOR_MODE=safe omp ...`.
+
+`dsh` mode changes request one only: it uses the exact Minimal persona, exposes compact `bash`/`read` schemas, and repairs OMP's required `i` field before executing bootstrap tool calls. Start a blank session and make the real inspect-first engineering task the first message.
+
+This mode intentionally removes OMP's system, workspace, skill, and memory instructions from request one. `bash` remains available, so use an isolated worktree and keep approvals enabled. Later requests restore the normal prompt and complete tool catalog.
+
 ## Install
 
 ```sh
@@ -29,7 +51,7 @@ bun run check
 
 ## Design and safety
 
-This plugin keeps OMP's system prompt, `AGENTS.md` rules, and skill instructions intact. It narrows only the active tool catalog and the first request's output budget. It performs no network requests and adds no telemetry.
+Default `safe` mode keeps OMP's system prompt, `AGENTS.md` rules, skill instructions, and tool schemas intact. Both modes perform no network requests and add no telemetry.
 
 This is an experimental trajectory-control technique, not evidence of universal quality improvement. Evaluate it against your own models and workloads.
 
@@ -37,7 +59,7 @@ This is an experimental trajectory-control technique, not evidence of universal 
 
 Conceptually inspired by [xiaobright/dsh-anchored-standard](https://github.com/xiaobright/dsh-anchored-standard), which introduced and evaluated a two-phase "Anchored Standard" preset for DeepSeek Harness: a minimal first-request tool catalog followed by the full catalog.
 
-This repository is an independent OMP implementation using OMP's extension and session APIs. It does not include the DeepSeek Harness Standard preset snapshot or copy the reference plugin source. Unlike the reference preset, it deliberately does not strip workspace instructions or skill catalogs.
+This repository is an independent OMP implementation using OMP's extension and session APIs. It does not include the DeepSeek Harness Standard preset snapshot or copy the reference plugin source. Default `safe` mode deliberately retains workspace instructions and skill catalogs; opt-in `dsh` mode replaces them on request one only.
 
 ## License
 
