@@ -1,6 +1,8 @@
 # OMP DeepSeek Anchor
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+[中文说明](./README.zh-CN.md)
+
 
 **Unlock DeepSeek V4's "we" trajectory in OMP** — port of [dsh-anchored-standard](https://github.com/xiaobright/dsh-anchored-standard) for Oh My Poof, maintaining Minimal persona across tool results.
 
@@ -52,6 +54,36 @@ omp --model ccs-codex-deepseek/deepseek-v4-pro --thinking max
 
 First DeepSeek session will bootstrap with Minimal persona. Non-DeepSeek models unaffected.
 
+## Activation Requirements
+
+The plugin activates **only** when both conditions are met:
+
+1. ✓ Model matches `/deepseek/i` (provider or id contains "deepseek", case-insensitive)
+2. ✓ Session has **no assistant messages yet** (fresh session only)
+
+### When It Works
+
+| Scenario | Activates? |
+|----------|-----------|
+| New session with `--model ccs-codex-deepseek/...` | ✓ Yes |
+| Empty session + `/model` switch to DeepSeek | ✓ Yes |
+| Mid-conversation `/model` switch to DeepSeek | ✗ No — trajectory already anchored |
+| DeepSeek session switched to non-DeepSeek | Deactivates immediately |
+
+**Always specify DeepSeek at session start**:
+
+```bash
+# ✓ Correct: specify on launch
+omp --model ccs-codex-deepseek/deepseek-v4-pro --thinking max
+
+# ✗ Wrong: switching mid-conversation won't anchor
+omp
+> /model ccs-codex-deepseek/deepseek-v4-pro  # Too late if you already chatted
+```
+
+V4 Pro's trajectory anchoring happens at the **first model request**. Switching models mid-conversation means the first request already happened with a different prompt/tool catalog, so anchoring cannot take effect.
+
+
 ## How It Works
 
 Two-phase promotion:
@@ -79,6 +111,38 @@ Real TUI verification in `.dsh-parity-verification.json`:
 - Promoted: 24 `we` / 13 `let me` (8,654 words)
 
 ## Compatibility
+
+## OMP vs DSH: Why Trajectory Purity Differs
+
+DSH `anchored-standard` achieves **0-1 `let me` across entire 98/99-score tasks**. This OMP port shows **+855% improvement** but retains mixed style (24 `we` / 13 `let me` in promoted phase). The gap comes from **architectural constraints**, not implementation bugs.
+
+### What DSH Controls That OMP Cannot
+
+| Capability | DSH (Cordis) | OMP (Extension API) |
+|-----------|--------------|---------------------|
+| Block all post-persona injections | ✓ `complete: true` | ✗ Hook runs after injections |
+| Strip workspace context pre-request | ✓ `suppressedContextSources` | ✗ No pre-step access |
+| Clean tool schemas | ✓ Minimal descriptions | ✗ OMP tools carry `<instruction>` blocks + `i` parameter |
+| System prompt sovereignty | ✓ Cordis waterfall | ✗ Payload-level replacement only |
+
+**OMP injects before the plugin hook runs**:
+- Full OMP persona (Engineering/Personality/Tone sections)
+- Workspace rules (AGENTS.md/CLAUDE.md digests)
+- Skill catalog
+- Memory context
+- Tool `i` parameter guidance
+
+The plugin can **replace the `system` field**, but cannot strip content already baked into `messages[]` or tool descriptions. This "contamination" dilutes the Minimal trajectory in the promoted phase.
+
+### Scope of This Implementation
+
+This plugin is **the maximum achievable within OMP's extension API**:
+- ✓ State machine matches DSH (tool promotion ≠ prompt promotion)
+- ✓ Minimal persona persists across tool results until `agent_end`
+- ✓ +855% `we` frequency improvement over first-request-only anchoring
+- ✗ Cannot reach DSH's 0-1 `let me` purity without OMP core changes
+
+To replicate DSH's **98/99 scores and trajectory purity**, use the original [`dsh-anchored-standard`](https://github.com/xiaobright/dsh-anchored-standard) preset in DeepSeek Harness.
 
 - **OMP**: Requires `@oh-my-pi/pi-coding-agent` extension API
 - **DeepSeek V4 Pro**: Tested on `ccs-codex-deepseek/deepseek-v4-pro`
