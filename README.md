@@ -20,12 +20,23 @@ With this plugin: Minimal persona **persists** across tool results until `agent_
 
 ## Installation
 
+### From GitHub
+
 ```bash
-git clone https://github.com/yourusername/omp-deepseek-anchor
+# Clone and install
+git clone https://github.com/TommyFang2077/omp-deepseek-anchor
 cd omp-deepseek-anchor
 bun install
 omp plugin install .
 ```
+
+Or install directly:
+
+```bash
+omp plugin install https://github.com/TommyFang2077/omp-deepseek-anchor
+```
+
+### Enable DSH Mode
 
 Add to `~/.bashrc` or shell config:
 
@@ -33,11 +44,13 @@ Add to `~/.bashrc` or shell config:
 export OMP_DEEPSEEK_ANCHOR_MODE=dsh
 ```
 
-Restart shell, then start OMP with DeepSeek:
+Restart shell or run `source ~/.bashrc`, then start OMP with DeepSeek:
 
 ```bash
 omp --model ccs-codex-deepseek/deepseek-v4-pro --thinking max
 ```
+
+First DeepSeek session will bootstrap with Minimal persona. Non-DeepSeek models unaffected.
 
 ## How It Works
 
