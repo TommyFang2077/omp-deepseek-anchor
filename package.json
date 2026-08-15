@@ -1,0 +1,48 @@
+{
+  "name": "omp-deepseek-anchor",
+  "version": "0.1.0",
+  "description": "Give DeepSeek a two-tool first request, then restore the full OMP tool catalog",
+  "type": "module",
+  "license": "MIT",
+  "author": "TommyFang2077",
+  "homepage": "https://github.com/TommyFang2077/omp-deepseek-anchor#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TommyFang2077/omp-deepseek-anchor.git"
+  },
+  "bugs": {
+    "url": "https://github.com/TommyFang2077/omp-deepseek-anchor/issues"
+  },
+  "keywords": [
+    "omp",
+    "oh-my-pi",
+    "deepseek",
+    "extension",
+    "plugin"
+  ],
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "check": "bun test && bun x tsc --noEmit"
+  },
+  "omp": {
+    "name": "DeepSeek Anchor",
+    "description": "Bootstrap fresh DeepSeek sessions with bash/read, then restore every configured OMP tool",
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@oh-my-pi/pi-coding-agent": ">=17.3.4"
+  },
+  "devDependencies": {
+    "@oh-my-pi/pi-coding-agent": "17.3.4",
+    "@types/bun": "latest",
+    "typescript": "latest"
+  },
+  "engines": {
+    "bun": ">=1.3.0"
+  }
+}
