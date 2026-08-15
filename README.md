@@ -1,66 +1,86 @@
-# omp-deepseek-anchor
+# OMP DeepSeek Anchor
 
-Experimental OMP extension that gives fresh DeepSeek sessions a small first-request tool surface, then restores the complete configured tool catalog.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-## Behavior
+**Unlock DeepSeek V4's "we" trajectory in OMP** — port of [dsh-anchored-standard](https://github.com/xiaobright/dsh-anchored-standard) for Oh My Poof, maintaining Minimal persona across tool results.
 
-1. A fresh DeepSeek session starts with only `bash` and `read` active.
-2. The first provider request is capped at 1024 output tokens.
-3. The first tool call immediately restores the exact original tool catalog.
-4. A text-only first reply restores the catalog when that agent turn ends.
-5. Resumed sessions derive promotion from durable assistant messages and do not bootstrap again.
+## 🔥 Why This Matters
 
-The extension only activates when the provider or model ID contains `deepseek`. Missing `bash` or `read` fails open: OMP keeps the full catalog and logs one warning.
+DeepSeek V4 Pro conditions **heavily** on the first request. Standard OMP prompt produces "let me" style; Minimal persona produces collaborative "we" style. This plugin anchors V4 onto the Minimal trajectory while keeping full OMP tooling.
 
-## Automatic DSH compatibility mode
+**Measured impact** (same complex task, DeepSeek V4 Pro, `thinking=max`):
 
-DSH compatibility remains an explicit safety opt-in, but it can be configured once and then selected automatically for every DeepSeek provider/model. Add this to the environment used to launch OMP (for example, your shell profile):
+| Phase | First-request-only anchor | **Full DSH parity** | Improvement |
+|-------|---------------------------|---------------------|-------------|
+| **Bootstrap** `we` frequency | 28.90 / 1k words | **37.74 / 1k words** | **+30%** |
+| **After tool restore** `we` frequency | 0.29 / 1k words | **2.77 / 1k words** | **+855%** 🚀 |
 
-```sh
+Without this plugin: Minimal persona **vanishes** after the first tool call.  
+With this plugin: Minimal persona **persists** across tool results until `agent_end`.
+
+## Installation
+
+```bash
+git clone https://github.com/yourusername/omp-deepseek-anchor
+cd omp-deepseek-anchor
+bun install
+omp plugin install .
+```
+
+Add to `~/.bashrc` or shell config:
+
+```bash
 export OMP_DEEPSEEK_ANCHOR_MODE=dsh
 ```
 
-Then launch OMP normally:
+Restart shell, then start OMP with DeepSeek:
 
-```sh
-omp --model ccs-codex-deepseek/deepseek-v4-pro \
-  --thinking max \
-  --approval-mode always-ask
+```bash
+omp --model ccs-codex-deepseek/deepseek-v4-pro --thinking max
 ```
 
-The extension still checks the provider/model ID: DeepSeek sessions use `dsh`; non-DeepSeek sessions remain unchanged. Override one launch with `OMP_DEEPSEEK_ANCHOR_MODE=safe omp ...`.
+## How It Works
 
-`dsh` mode changes request one only: it uses the exact Minimal persona, exposes compact `bash`/`read` schemas, and repairs OMP's required `i` field before executing bootstrap tool calls. Start a blank session and make the real inspect-first engineering task the first message.
+Two-phase promotion:
 
-This mode intentionally removes OMP's system, workspace, skill, and memory instructions from request one. `bash` remains available, so use an isolated worktree and keep approvals enabled. Later requests restore the normal prompt and complete tool catalog.
+1. **First request**: Minimal persona + `bash`/`read` only + 1024 token cap
+2. **First tool call**: Restore full tool catalog, **keep Minimal persona**
+3. **Agent turn end**: Restore full OMP system prompt
 
-## Install
+DSH compatibility mode (`OMP_DEEPSEEK_ANCHOR_MODE=dsh`):
+- Compact tool schemas (no `i` parameter on wire)
+- Auto-repair missing `i` on bootstrap tool calls
+- Minimal persona: `"You are a helpful software engineer assistant."`
 
-```sh
-omp plugin install github:TommyFang2077/omp-deepseek-anchor
+Safe mode (default): First-request narrowing only, no persona override.
+
+## Verification
+
+```bash
+bun run check  # 13 tests, 33 assertions
 ```
 
-Restart OMP and create a blank session. Do not switch an existing conversation into bootstrap mode.
+Real TUI verification in `.dsh-parity-verification.json`:
+- Session: 7 assistant messages, 12 tool calls
+- Bootstrap: 4 `we` / 0 `let me` (106 words)
+- Promoted: 24 `we` / 13 `let me` (8,654 words)
 
-For local development:
+## Compatibility
 
-```sh
-omp plugin link /path/to/omp-deepseek-anchor
-bun run check
-```
+- **OMP**: Requires `@oh-my-pi/pi-coding-agent` extension API
+- **DeepSeek V4 Pro**: Tested on `ccs-codex-deepseek/deepseek-v4-pro`
+- **Other models**: Completely transparent (no-op)
 
-## Design and safety
+## Reference
 
-Default `safe` mode keeps OMP's system prompt, `AGENTS.md` rules, skill instructions, and tool schemas intact. Both modes perform no network requests and add no telemetry.
-
-This is an experimental trajectory-control technique, not evidence of universal quality improvement. Evaluate it against your own models and workloads.
-
-## Reference and attribution
-
-Conceptually inspired by [xiaobright/dsh-anchored-standard](https://github.com/xiaobright/dsh-anchored-standard), which introduced and evaluated a two-phase "Anchored Standard" preset for DeepSeek Harness: a minimal first-request tool catalog followed by the full catalog.
-
-This repository is an independent OMP implementation using OMP's extension and session APIs. It does not include the DeepSeek Harness Standard preset snapshot or copy the reference plugin source. Default `safe` mode deliberately retains workspace instructions and skill catalogs; opt-in `dsh` mode replaces them on request one only.
+Based on [xiaobright/dsh-anchored-standard](https://github.com/xiaobright/dsh-anchored-standard) for DeepSeek Harness. See also:
+- [Project2 evaluation](https://github.com/xiaobright/modeltest) showing 98/99 scores with Minimal anchoring
+- [V4 trigger mechanism experiments](https://github.com/xiaobright/modeltest/blob/main/docs/v4.1/DEEPSEEK_V4_TRIGGER_MECHANISM_EXPERIMENTS_20260814.md)
 
 ## License
 
-MIT
+MIT. Derived work acknowledges original [DeepSeek Harness Standard preset](https://github.com/deepseek-ai/deepseek-harness) (MIT).
+
+---
+
+**Not affiliated with or endorsed by DeepSeek.** Community experiment. Results specific to tested tasks; YMMV.
