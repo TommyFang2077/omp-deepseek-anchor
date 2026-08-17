@@ -111,10 +111,40 @@ DSH 兼容模式（`OMP_DEEPSEEK_ANCHOR_MODE=dsh`）：
 | `OMP_DEEPSEEK_ANCHOR_RESIDENT` | 内置日常工具集 | 逗号分隔的 resident 工具名（替换默认；如 `bash,read,edit,write,grep,glob,todo,ask,web_search`） |
 | `OMP_DEEPSEEK_ANCHOR_MAX_TOKENS` | 未设置 | 可选的首请求输出上限（对应 DSH `bootstrapMaxTokens`）。在 OMP 上设 1024 会因 `stopReason: length` 误触发 snapcompact；除非要 dual-anchor，否则不要设。 |
 
+无效配置不会静默失败：非法的 `OMP_DEEPSEEK_ANCHOR_MODE`、非数字的 `OMP_DEEPSEEK_ANCHOR_MAX_TOKENS`，或 `OMP_DEEPSEEK_ANCHOR_RESIDENT` 包含会话目录中不存在的工具名时，各产生一次警告并回退到安全默认值。
+
+## 状态命令
+
+运行时可查看插件正在做什么（对应 dsh-routing-suite 的只读状态 API）：
+
+```
+/deepseek-anchor-status
+```
+
+输出模式、阶段（`bootstrap` / `promoted` / `inactive`）、zero-tool 与输出上限状态、以及当前工具目录。Bootstrap 激活时每会话记录一条日志（`... narrowed to bash+edit ...`）。该命令只读，绝不修改会话状态。
+
+## 安全边界
+
+Host 仅对**全新 DeepSeek 会话**执行工具目录缩窄/恢复与 system prompt 字段替换，并提供上述只读状态命令。它不会：
+
+- 触碰非 DeepSeek 模型或已晋升的会话（完全 no-op）；
+- 永久移除或限制工具 — bootstrap 后必定恢复或晋升；
+- 读写文件、执行命令、管理包、注册工具、创建子代理或发起额外 LLM 调用；
+- 运行任何 install/postinstall 生命周期代码。
+
+## 开发
+
+```bash
+bun run check          # 38 个测试，92 个断言 + 类型检查
+bun run verify         # check + 精确 tarball 包契约
+```
+
+`scripts/verify-package.mjs`（仿照 dsh-routing-suite）校验 MIT 许可证、禁止生命周期脚本、固定 `files` 白名单、断言 host 身份标记、保持 `src/anchor.ts` 不依赖 pi 运行时，并对比打包 tarball 文件集与白名单。出处与署名记录在 [`SOURCE_PROVENANCE.md`](./SOURCE_PROVENANCE.md) 与 [`AGENTS.md`](./AGENTS.md)。
+
 ## 验证
 
 ```bash
-bun run check  # 25 个测试，52 个断言
+bun run check  # 38 个测试，92 个断言
 ```
 
 真实 TUI 验证数据在 `.dsh-parity-verification.json`：
@@ -164,7 +194,7 @@ DSH `anchored-standard` 在整个 98/99 分任务中实现了 **0-1 次 `let me`
 
 ## 参考
 
-基于 [xiaobright/dsh-anchored-standard](https://github.com/xiaobright/dsh-anchored-standard) for DeepSeek Harness。另见：
+基于 [xiaobright/dsh-anchored-standard](https://github.com/xiaobright/dsh-anchored-standard) for DeepSeek Harness。工程结构（纯 anchor 模块、只读状态命令、环境变量配置校验、精确 tarball 校验、出处文档）参考 [dragonbaba/dsh-routing-suite](https://github.com/dragonbaba/dsh-routing-suite)。另见：
 - [Project2 评测](https://github.com/xiaobright/modeltest) 显示使用 Minimal 锚定获得 98/99 分
 - [V4 触发机制实验](https://github.com/xiaobright/modeltest/blob/main/docs/v4.1/DEEPSEEK_V4_TRIGGER_MECHANISM_EXPERIMENTS_20260814.md)
 

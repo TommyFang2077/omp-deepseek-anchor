@@ -113,10 +113,40 @@ Safe mode (default): First-request narrowing only, no persona override, full cat
 | `OMP_DEEPSEEK_ANCHOR_RESIDENT` | built-in daily set | Comma-separated resident tool names (replaces the default; e.g. `bash,read,edit,write,grep,glob,todo,ask,web_search`) |
 | `OMP_DEEPSEEK_ANCHOR_MAX_TOKENS` | unset | Optional first-request output cap (DSH `bootstrapMaxTokens`). A 1024 cap on OMP trips snapcompact via `stopReason: length`; leave unset unless you want dual-anchor. |
 
+Invalid configuration values never fail silently: a bad `OMP_DEEPSEEK_ANCHOR_MODE`, a non-numeric `OMP_DEEPSEEK_ANCHOR_MAX_TOKENS`, or a `OMP_DEEPSEEK_ANCHOR_RESIDENT` name that is absent from the session catalog produces one warning and falls back to safe defaults.
+
+## Status Command
+
+Inspect what the plugin is doing at runtime (analogue of dsh-routing-suite's read-only status API):
+
+```
+/deepseek-anchor-status
+```
+
+Prints mode, phase (`bootstrap` / `promoted` / `inactive`), zero-tool and output-cap state, and the current tool catalog. Bootstrap activation is also logged once per session (`... narrowed to bash+edit ...`). The command is read-only: it never mutates session state.
+
+## Safety
+
+The host only narrows/restores tool catalogs and swaps system-prompt fields on **fresh DeepSeek sessions**, and exposes the read-only status command above. It does not:
+
+- touch non-DeepSeek models or already-promoted sessions (complete no-op);
+- remove or restrict tools permanently — bootstrap is always restored or promoted;
+- read or write files, execute commands, manage packages, register tools, create subagents, or make additional LLM calls;
+- run any install/postinstall lifecycle code.
+
+## Development
+
+```bash
+bun run check          # 38 tests, 92 assertions + typecheck
+bun run verify         # check + exact-tarball package contract
+```
+
+`scripts/verify-package.mjs` (modeled on dsh-routing-suite's) verifies the MIT license, forbids lifecycle scripts, pins the `files` allowlist, asserts host identity markers, keeps `src/anchor.ts` free of the pi runtime, and compares the packed tarball file set against the allowlist. Provenance and attribution are recorded in [`SOURCE_PROVENANCE.md`](./SOURCE_PROVENANCE.md) and [`AGENTS.md`](./AGENTS.md).
+
 ## Verification
 
 ```bash
-bun run check  # 25 tests, 52 assertions
+bun run check  # 38 tests, 92 assertions
 ```
 
 Real TUI verification in `.dsh-parity-verification.json`:
@@ -166,7 +196,7 @@ To replicate DSH's **98/99 scores and trajectory purity**, use the original [`ds
 
 ## Reference
 
-Based on [xiaobright/dsh-anchored-standard](https://github.com/xiaobright/dsh-anchored-standard) for DeepSeek Harness. See also:
+Based on [xiaobright/dsh-anchored-standard](https://github.com/xiaobright/dsh-anchored-standard) for DeepSeek Harness. Engineering structure (pure anchor module, read-only status command, env-config validation, exact-tarball verification, provenance docs) follows [dragonbaba/dsh-routing-suite](https://github.com/dragonbaba/dsh-routing-suite). See also:
 - [Project2 evaluation](https://github.com/xiaobright/modeltest) showing 98/99 scores with Minimal anchoring
 - [V4 trigger mechanism experiments](https://github.com/xiaobright/modeltest/blob/main/docs/v4.1/DEEPSEEK_V4_TRIGGER_MECHANISM_EXPERIMENTS_20260814.md)
 

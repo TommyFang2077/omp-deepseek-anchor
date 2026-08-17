@@ -1,14 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
-import deepSeekAnchor, {
+import {
 	capOutputTokens,
 	DSH_ANCHOR_TEXT,
+	formatStatus,
 	hasPromotionSignal,
 	isDeepSeekModel,
 	parseMaxTokens,
 	prependAnchor,
-} from "../src/index";
+	bootstrapPayload,
+} from "../src/anchor";
+import deepSeekAnchor, { STATUS_COMMAND } from "../src/index";
 
 type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
 type TestModel = { provider: string; id: string; api: string };
@@ -45,15 +48,26 @@ function harness(
 	const handlers = new Map<string, Handler[]>();
 	const toolSets: string[][] = [];
 	const warnings: string[] = [];
+	const infos: string[] = [];
+	const notifications: string[] = [];
+	const commands = new Map<string, { description?: string; handler: unknown }>();
 	let activeTools = [...tools];
 	// The fake only implements the context surface exercised by this extension.
 	const ctx = {
 		model,
 		sessionManager: { getBranch: () => branch },
+		ui: {
+			notify(message: string, type?: string) {
+				notifications.push(`${type ?? "info"}: ${message}`);
+			},
+		},
 	} as unknown as ExtensionContext;
 	const pi = {
 		on(event: string, handler: Handler) {
 			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+		registerCommand(name: string, options: { description?: string; handler: unknown }) {
+			commands.set(name, options);
 		},
 		getActiveTools() {
 			return [...activeTools];
@@ -74,6 +88,9 @@ function harness(
 			warn(text: string) {
 				warnings.push(text);
 			},
+			info(text: string) {
+				infos.push(text);
+			},
 		},
 	};
 
@@ -83,6 +100,9 @@ function harness(
 		ctx,
 		toolSets,
 		warnings,
+		infos,
+		notifications,
+		commands,
 		activeTools: () => activeTools,
 		activateTools(...names: string[]) {
 			activeTools = [...new Set([...activeTools, ...names])];
@@ -740,5 +760,232 @@ describe("zero-tool anchor mode", () => {
 			input: "raw string",
 		});
 		expect(prependAnchor(null, "anchor")).toBeNull();
+	});
+});
+
+describe("payload transform purity", () => {
+	test("reapplying the bootstrap transform is a no-op", () => {
+		const payload = {
+			instructions: "full OMP prompt",
+			max_output_tokens: 64000,
+			tools: [
+				{
+					type: "function",
+					name: "bash",
+					description: "verbose bash",
+					parameters: {
+						type: "object",
+						properties: { i: {}, command: {} },
+						required: ["i", "command"],
+					},
+				},
+				{
+					type: "function",
+					function: {
+						name: "edit",
+						description: "verbose edit",
+						parameters: {
+							type: "object",
+							properties: { i: {}, path: {} },
+							required: ["i", "path"],
+						},
+					},
+				},
+			],
+		};
+		const once = bootstrapPayload(
+			payload,
+			"openai-responses",
+			"dsh",
+			true,
+			false,
+			1024,
+		);
+		const twice = bootstrapPayload(
+			once,
+			"openai-responses",
+			"dsh",
+			true,
+			false,
+			1024,
+		);
+		expect(twice).toEqual(once);
+		expect(once).toMatchObject({
+			instructions: "You are a helpful software engineer assistant.",
+			max_output_tokens: 1024,
+		});
+		expect((once as { tools: unknown[] }).tools).toHaveLength(2);
+	});
+
+	test("non-object payloads pass through unchanged", () => {
+		for (const payload of [null, undefined, 42, "text", ["bash"]]) {
+			expect(bootstrapPayload(payload, "openai-responses", "dsh", true, true, 1024)).toBe(payload);
+		}
+	});
+
+	test("hasPromotionSignal fails open without a session manager", () => {
+		expect(hasPromotionSignal({} as never)).toBe(false);
+		expect(
+			hasPromotionSignal({
+				sessionManager: undefined,
+			} as never),
+		).toBe(false);
+	});
+});
+
+describe("status command", () => {
+	test("registers a read-only status command", () => {
+		const app = harness();
+		const registered = app.commands.get(STATUS_COMMAND);
+		expect(registered).toBeDefined();
+		expect(registered?.description).toContain("runtime state");
+	});
+
+	test("reports live mode, phase, and catalog state", async () => {
+		const app = harness();
+		const handler = app.commands.get(STATUS_COMMAND)
+			?.handler as (args: string, ctx: ExtensionContext) => Promise<void>;
+		await handler("", app.ctx);
+		expect(app.notifications).toHaveLength(1);
+		expect(app.notifications[0]).toContain("mode=safe");
+		expect(app.notifications[0]).toContain("phase=bootstrap");
+		expect(app.notifications[0]).toContain("active tools: bash, read, edit, grep");
+	});
+
+	test("falls back to the logger when no UI is available", async () => {
+		const app = harness();
+		const handler = app.commands.get(STATUS_COMMAND)
+			?.handler as (args: string, ctx: ExtensionContext) => Promise<void>;
+		const ctx = { ...app.ctx } as { ui?: unknown };
+		delete ctx.ui;
+		await handler("", ctx as unknown as ExtensionContext);
+		expect(app.notifications).toHaveLength(0);
+		expect(app.infos.some((info) => info.includes("mode=safe"))).toBe(true);
+	});
+
+	test("dsh bootstrap activation is reported", async () => {
+		const app = harness({ mode: "dsh" });
+		const handler = app.commands.get(STATUS_COMMAND)
+			?.handler as (args: string, ctx: ExtensionContext) => Promise<void>;
+		await app.emit("session_start");
+		expect(app.infos.some((line) => line.includes("/deepseek-anchor-status"))).toBe(true);
+		await handler("", app.ctx);
+		expect(app.notifications[0]).toContain("mode=dsh");
+		expect(app.notifications[0]).toContain("phase=bootstrap");
+		expect(app.notifications[0]).toContain("minimal persona: true");
+	});
+});
+
+describe("configuration validation", () => {
+	test("invalid OMP_DEEPSEEK_ANCHOR_MODE warns and falls back to safe", async () => {
+		process.env.OMP_DEEPSEEK_ANCHOR_MODE = "banana";
+		try {
+			const app = harness();
+			expect(
+				app.warnings.some((w) => w.includes('OMP_DEEPSEEK_ANCHOR_MODE="banana"')),
+			).toBe(true);
+			await app.emit("session_start");
+			expect(app.activeTools()).toEqual(["bash", "edit"]);
+		} finally {
+			delete process.env.OMP_DEEPSEEK_ANCHOR_MODE;
+		}
+	});
+
+	test("invalid OMP_DEEPSEEK_ANCHOR_MAX_TOKENS warns and disables the cap", async () => {
+		process.env.OMP_DEEPSEEK_ANCHOR_MAX_TOKENS = "abc";
+		try {
+			const app = harness();
+			expect(
+				app.warnings.some((w) =>
+					w.includes('OMP_DEEPSEEK_ANCHOR_MAX_TOKENS="abc"'),
+				),
+			).toBe(true);
+			await app.emit("session_start");
+			const first = await app.emit("before_provider_request", {
+				type: "before_provider_request",
+				payload: { max_output_tokens: 64000, tools: ["bash", "edit"] },
+			});
+			expect(first).toEqual({
+				max_output_tokens: 64000,
+				tools: ["bash", "edit"],
+			});
+		} finally {
+			delete process.env.OMP_DEEPSEEK_ANCHOR_MAX_TOKENS;
+		}
+	});
+
+	test("resident tools missing from the catalog warn once and are skipped", async () => {
+		process.env.OMP_DEEPSEEK_ANCHOR_RESIDENT = "bash,read,web_search";
+		try {
+			const app = harness({ mode: "dsh", tools: ["bash", "read", "edit"] });
+			await app.emit("session_start");
+			await app.emit("tool_call", { type: "tool_call", toolName: "read" });
+			expect(app.activeTools()).toEqual(["bash", "read"]);
+			const mentions = app.warnings.filter((w) => w.includes("web_search"));
+			expect(mentions).toHaveLength(1);
+			expect(mentions[0]).toContain("skipped");
+		} finally {
+			delete process.env.OMP_DEEPSEEK_ANCHOR_RESIDENT;
+		}
+	});
+
+	test("bootstrap activation logs a one-time info line", async () => {
+		const app = harness();
+		await app.emit("session_start");
+		await app.emit("session_start");
+		expect(app.infos).toHaveLength(1);
+		expect(app.infos[0]).toContain("narrowed to bash+edit");
+	});
+});
+
+describe("status formatting", () => {
+	test("formatStatus renders mode, phase, and catalog state", () => {
+		const text = formatStatus({
+			mode: "dsh",
+			model: "ccs-codex-deepseek/deepseek-v4-pro",
+			promoted: false,
+			active: true,
+			toolsNarrowed: true,
+			minimalPromptActive: true,
+			zeroTools: true,
+			maxTokens: 1024,
+			residentTools: ["bash", "read", "edit"],
+			activeTools: ["bash", "edit"],
+		});
+		expect(text).toContain("mode=dsh");
+		expect(text).toContain("phase=bootstrap");
+		expect(text).toContain("zero-tool anchor: on");
+		expect(text).toContain("first-request cap: 1024");
+		expect(text).toContain("resident tools: bash, read, edit");
+		expect(text).toContain("active tools: bash, edit");
+	});
+
+	test("formatStatus renders promoted and inactive phases", () => {
+		const promoted = formatStatus({
+			mode: "dsh",
+			model: "ccs-codex-deepseek/deepseek-v4-pro",
+			promoted: true,
+			active: true,
+			toolsNarrowed: false,
+			minimalPromptActive: false,
+			zeroTools: false,
+			residentTools: [],
+			activeTools: [],
+		});
+		expect(promoted).toContain("phase=promoted");
+
+		const inactive = formatStatus({
+			mode: "safe",
+			model: "anthropic/claude-sonnet-5",
+			promoted: false,
+			active: false,
+			toolsNarrowed: false,
+			minimalPromptActive: false,
+			zeroTools: false,
+			residentTools: [],
+			activeTools: [],
+		});
+		expect(inactive).toContain("phase=inactive");
+		expect(inactive).toContain("anchor: inactive");
 	});
 });

@@ -21,11 +21,19 @@
     "plugin"
   ],
   "files": [
-    "src"
+    "src",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE",
+    ".dsh-parity-verification.json",
+    "AGENTS.md",
+    "SOURCE_PROVENANCE.md"
   ],
   "scripts": {
     "test": "bun test",
-    "check": "bun test && bun x tsc --noEmit"
+    "check": "bun test && bun x tsc --noEmit",
+    "verify:package": "bun scripts/verify-package.mjs",
+    "verify": "bun run check && bun run verify:package"
   },
   "omp": {
     "name": "DeepSeek Anchor",
