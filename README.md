@@ -88,7 +88,7 @@ V4 Pro's trajectory anchoring happens at the **first model request**. Switching 
 
 Three-phase promotion (from dsh-anchored-standard, including the post-promotion resident-set fix):
 
-1. **First request**: Minimal persona + `bash`/`read` only + 1024 token cap
+1. **First request**: Minimal persona + `bash`/`edit` only (OMP analogue of DSH's `bash` + `str_replace_editor`). Output is **not** capped by default — set `OMP_DEEPSEEK_ANCHOR_MAX_TOKENS` to opt into the dual-anchor 1024 cap.
 2. **First durable signal** (first tool call *or* first assistant message — DSH's `either` promotion): restore the **resident catalog**, **keep Minimal persona**. The resident set (`bash`, `read`, `edit`, `write`, `grep`, `glob`, `todo`, `ask`) deliberately excludes heavier tools (`web_search`, `task`, `hub`, `browser`, `lsp`, `debug`, MCP, …): dumping the full catalog after promotion pulls the trajectory back to standard-like behavior (measured post-promotion regression in dsh-anchored-standard). On session resume/reload the same resident surface is enforced for the whole DeepSeek session.
 3. **Agent turn end**: Restore full OMP system prompt
 
@@ -111,12 +111,12 @@ Safe mode (default): First-request narrowing only, no persona override, full cat
 | `OMP_DEEPSEEK_ANCHOR_ZERO_TOOLS` | unset | `1` (with `dsh`) empties the first request's tool catalog and prepends the anchor turn |
 | `OMP_DEEPSEEK_ANCHOR_TEXT` | DSH anchor text | Custom anchor notice for zero-tool mode |
 | `OMP_DEEPSEEK_ANCHOR_RESIDENT` | built-in daily set | Comma-separated resident tool names (replaces the default; e.g. `bash,read,edit,write,grep,glob,todo,ask,web_search`) |
-| `OMP_DEEPSEEK_ANCHOR_MAX_TOKENS` | `1024` | First-request output cap |
+| `OMP_DEEPSEEK_ANCHOR_MAX_TOKENS` | unset | Optional first-request output cap (DSH `bootstrapMaxTokens`). A 1024 cap on OMP trips snapcompact via `stopReason: length`; leave unset unless you want dual-anchor. |
 
 ## Verification
 
 ```bash
-bun run check  # 23 tests, 46 assertions
+bun run check  # 25 tests, 52 assertions
 ```
 
 Real TUI verification in `.dsh-parity-verification.json`:

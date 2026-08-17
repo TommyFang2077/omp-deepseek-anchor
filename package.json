@@ -1,7 +1,7 @@
 {
   "name": "omp-deepseek-anchor",
   "version": "0.1.0",
-  "description": "Give DeepSeek a two-tool first request, then restore the full OMP tool catalog",
+  "description": "Give DeepSeek a bash+edit first request (DSH Minimal pair), then restore the OMP tool catalog",
   "type": "module",
   "license": "MIT",
   "author": "TommyFang2077",
@@ -29,7 +29,7 @@
   },
   "omp": {
     "name": "DeepSeek Anchor",
-    "description": "Bootstrap fresh DeepSeek sessions with bash/read, then restore every configured OMP tool",
+    "description": "Bootstrap fresh DeepSeek sessions with bash/edit, then restore every configured OMP tool",
     "extensions": [
       "./src/index.ts"
     ]

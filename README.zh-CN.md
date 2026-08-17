@@ -86,7 +86,7 @@ V4 Pro 的轨迹锚定发生在**首次模型请求**。对话中途切换模型
 
 三阶段晋升（移植 dsh-anchored-standard，含晋升后 resident 目录修复）：
 
-1. **首次请求**：Minimal persona + 仅 `bash`/`read` + 1024 token 限制
+1. **首次请求**：Minimal persona + 仅 `bash`/`edit`（对应 DSH 的 `bash` + `str_replace_editor`）。默认**不**限制输出——需要 dual-anchor 的 1024 cap 时再设 `OMP_DEEPSEEK_ANCHOR_MAX_TOKENS`。
 2. **首个持久信号**（首次工具调用 *或* 首条 assistant 消息 — DSH 的 `either` 晋升）：恢复 **resident 目录**，**保持 Minimal persona**。resident 集（`bash`、`read`、`edit`、`write`、`grep`、`glob`、`todo`、`ask`）刻意排除较重工具（`web_search`、`task`、`hub`、`browser`、`lsp`、`debug`、MCP 等）：晋升后一次性倾倒完整目录会把轨迹拉回 standard 风格（dsh-anchored-standard 实测的晋升后回退）。会话恢复/重载时对整个 DeepSeek 会话强制执行同一 resident 表面。
 3. **Agent 回合结束**：恢复完整 OMP system prompt
 
@@ -109,12 +109,12 @@ DSH 兼容模式（`OMP_DEEPSEEK_ANCHOR_MODE=dsh`）：
 | `OMP_DEEPSEEK_ANCHOR_ZERO_TOOLS` | 未设置 | `1`（配合 `dsh`）清空首次请求工具目录并前置锚定回合 |
 | `OMP_DEEPSEEK_ANCHOR_TEXT` | DSH 锚定文案 | 自定义 zero-tool 模式锚定提示 |
 | `OMP_DEEPSEEK_ANCHOR_RESIDENT` | 内置日常工具集 | 逗号分隔的 resident 工具名（替换默认；如 `bash,read,edit,write,grep,glob,todo,ask,web_search`） |
-| `OMP_DEEPSEEK_ANCHOR_MAX_TOKENS` | `1024` | 首次请求输出上限 |
+| `OMP_DEEPSEEK_ANCHOR_MAX_TOKENS` | 未设置 | 可选的首请求输出上限（对应 DSH `bootstrapMaxTokens`）。在 OMP 上设 1024 会因 `stopReason: length` 误触发 snapcompact；除非要 dual-anchor，否则不要设。 |
 
 ## 验证
 
 ```bash
-bun run check  # 23 个测试，46 个断言
+bun run check  # 25 个测试，52 个断言
 ```
 
 真实 TUI 验证数据在 `.dsh-parity-verification.json`：
