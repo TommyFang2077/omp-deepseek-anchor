@@ -3,6 +3,35 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 const BOOTSTRAP_TOOLS = ["bash", "read"] as const;
 const BOOTSTRAP_MAX_TOKENS = 1024;
 const DSH_MINIMAL_SYSTEM = "You are a helpful software engineer assistant.";
+
+/**
+ * Zero-tool anchor notice (port of dsh-anchored-standard's `ANCHOR_TEXT`):
+ * prepended to the first request of a fresh DeepSeek session when
+ * `OMP_DEEPSEEK_ANCHOR_ZERO_TOOLS=1`, conditioning the "we" trajectory with
+ * an explicit "tools not open yet" user turn before the real message.
+ */
+export const DSH_ANCHOR_TEXT =
+	"This round is a test. Tools are not open yet; all tools will open next round.";
+
+/**
+ * Resident catalog applied to DeepSeek sessions after promotion (dsh mode).
+ * Port of dsh-anchored-standard's post-promotion resident set: the bootstrap
+ * pair plus the daily file-work tools, NOT the full catalog. The reference
+ * measured that dumping the whole catalog after promotion pulls the
+ * trajectory back to standard-like behavior (a flood of `let me` first-lines).
+ * Override with `OMP_DEEPSEEK_ANCHOR_RESIDENT=name1,name2,...`.
+ */
+const RESIDENT_FALLBACK_TOOLS = [
+	"bash",
+	"read",
+	"edit",
+	"write",
+	"grep",
+	"glob",
+	"todo",
+	"ask",
+] as const;
+
 type AnchorMode = "safe" | "dsh";
 
 function isBootstrapTool(name: string): boolean {
@@ -56,56 +85,132 @@ export function capOutputTokens(
 	return { ...request, [field]: capped };
 }
 
+/**
+ * Prepend the zero-tool anchor notice as the first user message of a request.
+ * Chat payloads keep a leading system/developer block in place; Responses
+ * payloads get a `message` input item. Unrecognized payloads pass through.
+ */
+export function prependAnchor(payload: unknown, text: string): unknown {
+	if (typeof payload !== "object" || payload === null || Array.isArray(payload))
+		return payload;
+	const request = payload as RequestPayload;
+
+	if (Array.isArray(request.messages)) {
+		const head: unknown[] = [];
+		const rest: unknown[] = [];
+		for (const message of request.messages) {
+			const role = (message as RequestPayload)?.role;
+			if (head.length === 0 && (role === "system" || role === "developer"))
+				head.push(message);
+			else rest.push(message);
+		}
+		return {
+			...request,
+			messages: [...head, { role: "user", content: text }, ...rest],
+		};
+	}
+
+	if (Array.isArray(request.input)) {
+		return {
+			...request,
+			input: [
+				{
+					type: "message",
+					role: "user",
+					content: [{ type: "input_text", text }],
+				},
+				...request.input,
+			],
+		};
+	}
+
+	return payload;
+}
+
+function parseMaxTokens(): number {
+	const raw = process.env.OMP_DEEPSEEK_ANCHOR_MAX_TOKENS;
+	if (raw === undefined || raw.trim() === "") return BOOTSTRAP_MAX_TOKENS;
+	const parsed = Number(raw);
+	return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : BOOTSTRAP_MAX_TOKENS;
+}
+
+function readEnvText(name: string, fallback: string): string {
+	const raw = process.env[name];
+	return typeof raw === "string" && raw.trim().length > 0 ? raw : fallback;
+}
+
+function resolveResidentTools(): string[] {
+	const raw = process.env.OMP_DEEPSEEK_ANCHOR_RESIDENT;
+	if (raw === undefined || raw.trim() === "") return [...RESIDENT_FALLBACK_TOOLS];
+	return [
+		...new Set(
+			raw
+				.split(",")
+				.map((name) => name.trim())
+				.filter((name) => name.length > 0),
+		),
+	];
+}
+
+function filterAvailable(names: readonly string[], available: string[]): string[] {
+	const have = new Set(available);
+	return [...new Set(names)].filter((name) => have.has(name));
+}
+
 function bootstrapPayload(
 	payload: unknown,
 	api: string | undefined,
 	mode: AnchorMode,
 	narrowTools: boolean,
+	zeroTools: boolean,
+	limit = BOOTSTRAP_MAX_TOKENS,
 ): unknown {
-	const capped = capOutputTokens(payload, api);
+	const capped = capOutputTokens(payload, api, limit);
 	if (typeof capped !== "object" || capped === null || Array.isArray(capped))
 		return capped;
 
 	const request = capped as RequestPayload;
 	if (!Array.isArray(request.tools)) return capped;
-	const tools = narrowTools
-		? request.tools.flatMap((tool) => {
-				if (typeof tool === "string") return isBootstrapTool(tool) ? [tool] : [];
-				if (typeof tool !== "object" || tool === null || Array.isArray(tool))
-					return [];
+	const tools = !narrowTools
+		? request.tools
+		: zeroTools
+			? []
+			: request.tools.flatMap((tool) => {
+					if (typeof tool === "string") return isBootstrapTool(tool) ? [tool] : [];
+					if (typeof tool !== "object" || tool === null || Array.isArray(tool))
+						return [];
 
-				const entry = tool as RequestPayload;
-				const nested = entry.function;
-				const nestedFunction =
-					typeof nested === "object" && nested !== null && !Array.isArray(nested)
-						? (nested as RequestPayload)
-						: undefined;
-				const name =
-					typeof entry.name === "string"
-						? entry.name
-						: typeof nestedFunction?.name === "string"
-							? nestedFunction.name
+					const entry = tool as RequestPayload;
+					const nested = entry.function;
+					const nestedFunction =
+						typeof nested === "object" && nested !== null && !Array.isArray(nested)
+							? (nested as RequestPayload)
 							: undefined;
-				if (name === undefined || !isBootstrapTool(name)) return [];
-				if (mode === "safe") return [tool];
+					const name =
+						typeof entry.name === "string"
+							? entry.name
+							: typeof nestedFunction?.name === "string"
+								? nestedFunction.name
+								: undefined;
+					if (name === undefined || !isBootstrapTool(name)) return [];
+					if (mode === "safe") return [tool];
 
-				const description =
-					name === "bash"
-						? "Run a command in a persistent shell."
-						: "Read a text file.";
-				const parameters = {
-					type: "object",
-					properties:
+					const description =
 						name === "bash"
-							? { command: { type: "string" } }
-							: { path: { type: "string" } },
-					required: [name === "bash" ? "command" : "path"],
-				};
-				return nestedFunction
-					? [{ ...entry, function: { ...nestedFunction, description, parameters } }]
-					: [{ ...entry, description, parameters }];
-			})
-		: request.tools;
+							? "Run a command in a persistent shell."
+							: "Read a text file.";
+					const parameters = {
+						type: "object",
+						properties:
+							name === "bash"
+								? { command: { type: "string" } }
+								: { path: { type: "string" } },
+						required: [name === "bash" ? "command" : "path"],
+					};
+					return nestedFunction
+						? [{ ...entry, function: { ...nestedFunction, description, parameters } }]
+						: [{ ...entry, description, parameters }];
+				});
 
 	const transformed: RequestPayload = { ...request, tools };
 	if (mode !== "dsh") return transformed;
@@ -134,9 +239,15 @@ export default function deepSeekAnchor(
 ) {
 	let onceGuidanceShown = mode === "dsh" || !!process.env.OMP_DEEPSEEK_ANCHOR_MODE;
 
+	const maxTokens = parseMaxTokens();
+	const zeroTools =
+		mode === "dsh" && process.env.OMP_DEEPSEEK_ANCHOR_ZERO_TOOLS === "1";
+	const anchorText = readEnvText("OMP_DEEPSEEK_ANCHOR_TEXT", DSH_ANCHOR_TEXT);
+
 	let toolsNarrowed = false;
 	let minimalPromptActive = false;
 	let restoreTools: string[] | undefined;
+	let residentApplied = false;
 	let warnedMissingTools = false;
 
 	function showDshGuidanceOnce() {
@@ -149,15 +260,42 @@ export default function deepSeekAnchor(
 			"  Then restart the shell and create a new OMP session.",
 		);
 	}
+
+	/**
+	 * Restore the bootstrapped catalog. dsh mode narrows to the resident set
+	 * (bootstrap pair + daily tools, `OMP_DEEPSEEK_ANCHOR_RESIDENT` overrides)
+	 * instead of the full catalog — the post-promotion trajectory fix from
+	 * dsh-anchored-standard. Safe mode keeps the full original catalog.
+	 */
 	async function promoteTools(): Promise<void> {
 		if (!toolsNarrowed || !restoreTools) return;
-		await pi.setActiveTools(restoreTools);
+		const full = restoreTools;
+		const next =
+			mode === "dsh" ? filterAvailable(resolveResidentTools(), full) : full;
+		await pi.setActiveTools(next.length > 0 ? next : full);
 		toolsNarrowed = false;
 		restoreTools = undefined;
+		residentApplied = true;
 	}
 
 	async function promotePrompt(): Promise<void> {
 		minimalPromptActive = false;
+	}
+
+	/**
+	 * Enforce the resident catalog on already-promoted DeepSeek sessions
+	 * (resume/reload/switch): the phase derives from durable assistant
+	 * messages, so a restarted session keeps the resident surface.
+	 */
+	async function ensureResident(ctx: ExtensionContext): Promise<void> {
+		if (residentApplied || mode !== "dsh" || !isDeepSeekModel(ctx.model)) return;
+		const available = pi.getAllTools()
+			? pi.getAllTools().map((tool) => tool.name)
+			: pi.getActiveTools();
+		const resident = filterAvailable(resolveResidentTools(), available);
+		if (resident.length === 0) return;
+		residentApplied = true;
+		await pi.setActiveTools(resident);
 	}
 
 	async function sync(ctx: ExtensionContext): Promise<void> {
@@ -166,6 +304,7 @@ export default function deepSeekAnchor(
 		if (!shouldBootstrap) {
 			await promoteTools();
 			await promotePrompt();
+			await ensureResident(ctx);
 			return;
 		}
 
@@ -210,10 +349,31 @@ export default function deepSeekAnchor(
 
 	pi.on("before_agent_start", async (_event, ctx) => sync(ctx));
 
+	// Either-signal promotion (port of dsh `promoteOn: "either"`): the first
+	// durable assistant message promotes the catalog even when it makes no
+	// tool call, so a text-only first reply cannot trap the session in
+	// bootstrap forever.
+	pi.on("message_end", async (event) => {
+		if (!toolsNarrowed) return;
+		if (event.message?.role !== "assistant") return;
+		await promoteTools();
+	});
+
 	pi.on("before_provider_request", async (event, ctx) => {
 		if (toolsNarrowed) await sync(ctx);
 		if (!minimalPromptActive || !isDeepSeekModel(ctx.model)) return event.payload;
-		return bootstrapPayload(event.payload, ctx.model?.api, mode, toolsNarrowed);
+		let payload = bootstrapPayload(
+			event.payload,
+			ctx.model?.api,
+			mode,
+			toolsNarrowed,
+			zeroTools,
+			maxTokens,
+		);
+		if (zeroTools && toolsNarrowed) {
+			payload = prependAnchor(payload, anchorText);
+		}
+		return payload;
 	});
 
 	pi.on("tool_call", async (event) => {

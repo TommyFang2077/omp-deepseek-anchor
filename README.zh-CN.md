@@ -84,23 +84,37 @@ V4 Pro 的轨迹锚定发生在**首次模型请求**。对话中途切换模型
 
 ## 工作原理
 
-两阶段晋升：
+三阶段晋升（移植 dsh-anchored-standard，含晋升后 resident 目录修复）：
 
 1. **首次请求**：Minimal persona + 仅 `bash`/`read` + 1024 token 限制
-2. **首次工具调用**：恢复完整工具目录，**保持 Minimal persona**
+2. **首个持久信号**（首次工具调用 *或* 首条 assistant 消息 — DSH 的 `either` 晋升）：恢复 **resident 目录**，**保持 Minimal persona**。resident 集（`bash`、`read`、`edit`、`write`、`grep`、`glob`、`todo`、`ask`）刻意排除较重工具（`web_search`、`task`、`hub`、`browser`、`lsp`、`debug`、MCP 等）：晋升后一次性倾倒完整目录会把轨迹拉回 standard 风格（dsh-anchored-standard 实测的晋升后回退）。会话恢复/重载时对整个 DeepSeek 会话强制执行同一 resident 表面。
 3. **Agent 回合结束**：恢复完整 OMP system prompt
 
 DSH 兼容模式（`OMP_DEEPSEEK_ANCHOR_MODE=dsh`）：
 - 紧凑工具 schema（wire 上无 `i` 参数）
 - 自动修复 bootstrap 工具调用缺失的 `i`
 - Minimal persona：`"You are a helpful software engineer assistant."`
+- 晋升后使用 resident 目录而非完整工具集
 
-安全模式（默认）：仅首次请求缩窄，不覆盖 persona。
+可选 zero-tool 锚定（`OMP_DEEPSEEK_ANCHOR_ZERO_TOOLS=1`，仅 dsh 模式，实验性 — 移植自 `zero-anchored-standard`）：
+- 首次请求携带**空工具目录**并前置一条锚定用户回合（`"This round is a test. Tools are not open yet; all tools will open next round."`），塑造零注入的 "we" 轨迹；下一请求/回合起开放工具。
+
+安全模式（默认）：仅首次请求缩窄，不覆盖 persona，恢复完整目录。
+
+## 配置
+
+| 环境变量 | 默认 | 作用 |
+|---------|------|------|
+| `OMP_DEEPSEEK_ANCHOR_MODE` | `safe` | `dsh` 启用 Minimal persona 持续 + resident 目录 |
+| `OMP_DEEPSEEK_ANCHOR_ZERO_TOOLS` | 未设置 | `1`（配合 `dsh`）清空首次请求工具目录并前置锚定回合 |
+| `OMP_DEEPSEEK_ANCHOR_TEXT` | DSH 锚定文案 | 自定义 zero-tool 模式锚定提示 |
+| `OMP_DEEPSEEK_ANCHOR_RESIDENT` | 内置日常工具集 | 逗号分隔的 resident 工具名（替换默认；如 `bash,read,edit,write,grep,glob,todo,ask,web_search`） |
+| `OMP_DEEPSEEK_ANCHOR_MAX_TOKENS` | `1024` | 首次请求输出上限 |
 
 ## 验证
 
 ```bash
-bun run check  # 13 个测试，33 个断言
+bun run check  # 23 个测试，46 个断言
 ```
 
 真实 TUI 验证数据在 `.dsh-parity-verification.json`：
@@ -134,10 +148,12 @@ DSH `anchored-standard` 在整个 98/99 分任务中实现了 **0-1 次 `let me`
 
 ### 本实现的范围
 
-本插件是 **OMP extension API 范围内可达到的最优解**：
-- ✓ 状态机与 DSH 匹配（工具晋升 ≠ prompt 晋升）
+本插件是 **OMP extension API 范围内可达到的最优解**，现含参考仓库的晋升后 resident 目录修复：
+- ✓ 状态机与 DSH 匹配（工具晋升 ≠ prompt 晋升；`either` 晋升信号）
 - ✓ Minimal persona 在工具调用后持续到 `agent_end`
-- ✓ 相比仅首次请求锚定，`we` 频率提升 +855%
+- ✓ 晋升后使用 resident 目录而非倾泻完整目录（dsh-anchored-standard 的晋升后回退修复）
+- ✓ 可选 zero-tool 锚定回合（实验性）
+- ✓ 相比仅首次请求锚定，`we` 频率提升 +855%（resident 目录前的实测值）
 - ✗ 在不修改 OMP 核心的情况下，无法达到 DSH 的 0-1 次 `let me` 纯度
 
 要复现 DSH 的 **98/99 分数和轨迹纯度**，请使用原版 [`dsh-anchored-standard`](https://github.com/xiaobright/dsh-anchored-standard) preset 在 DeepSeek Harness 中运行。

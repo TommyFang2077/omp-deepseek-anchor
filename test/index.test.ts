@@ -3,8 +3,10 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 import deepSeekAnchor, {
 	capOutputTokens,
+	DSH_ANCHOR_TEXT,
 	hasPromotionSignal,
 	isDeepSeekModel,
+	prependAnchor,
 } from "../src/index";
 
 type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
@@ -54,6 +56,14 @@ function harness(
 		},
 		getActiveTools() {
 			return [...activeTools];
+		},
+		getAllTools() {
+			return [...activeTools].map((name) => ({
+				name,
+				description: name,
+				parameters: {},
+				sourceInfo: { path: `<test:${name}>`, source: "extension" },
+			}));
 		},
 		async setActiveTools(next: string[]) {
 			activeTools = [...next];
@@ -479,5 +489,214 @@ describe("DSH compatibility mode", () => {
 				},
 			],
 		});
+	});
+});
+
+describe("DSH resident catalog (post-promotion)", () => {
+	test("promotion restores the resident set, not the full catalog", async () => {
+		const app = harness({
+			mode: "dsh",
+			tools: ["bash", "read", "edit", "write", "grep", "web_search", "task"],
+		});
+		await app.emit("session_start");
+		expect(app.activeTools()).toEqual(["bash", "read"]);
+
+		await app.emit("tool_call", {
+			type: "tool_call",
+			toolName: "read",
+			input: {},
+		});
+		expect(app.activeTools()).toEqual([
+			"bash",
+			"read",
+			"edit",
+			"write",
+			"grep",
+		]);
+	});
+
+	test("the resident catalog stays applied across later un-perturbed requests", async () => {
+		const app = harness({
+			mode: "dsh",
+			tools: ["bash", "read", "edit", "grep", "web_search"],
+		});
+		await app.emit("session_start");
+		await app.emit("message_end", {
+			type: "message_end",
+			message: { role: "assistant" },
+		});
+		expect(app.activeTools()).toEqual(["bash", "read", "edit", "grep"]);
+
+		await app.emit("agent_end", { type: "agent_end", messages: [] });
+		expect(app.activeTools()).toEqual(["bash", "read", "edit", "grep"]);
+	});
+
+	test("resumed DeepSeek sessions are narrowed to the resident set", async () => {
+		const app = harness({
+			mode: "dsh",
+			branch: [message("assistant")],
+			tools: ["bash", "read", "edit", "grep", "web_search", "task"],
+		});
+		await app.emit("session_start");
+		expect(app.activeTools()).toEqual(["bash", "read", "edit", "grep"]);
+	});
+
+	test("OMP_DEEPSEEK_ANCHOR_RESIDENT replaces the resident set", async () => {
+		process.env.OMP_DEEPSEEK_ANCHOR_RESIDENT = "bash,read,glob";
+		try {
+			const app = harness({
+				mode: "dsh",
+				tools: ["bash", "read", "edit", "grep", "glob", "web_search"],
+			});
+			await app.emit("session_start");
+			await app.emit("tool_call", {
+				type: "tool_call",
+				toolName: "read",
+				input: {},
+			});
+			expect(app.activeTools()).toEqual(["bash", "read", "glob"]);
+		} finally {
+			delete process.env.OMP_DEEPSEEK_ANCHOR_RESIDENT;
+		}
+	});
+
+	test("safe mode still restores the full catalog", async () => {
+		const app = harness({
+			tools: ["bash", "read", "edit", "web_search"],
+		});
+		await app.emit("session_start");
+		await app.emit("tool_call", { type: "tool_call", toolName: "read" });
+		expect(app.activeTools()).toEqual(["bash", "read", "edit", "web_search"]);
+	});
+});
+
+describe("zero-tool anchor mode", () => {
+	test("first Chat request carries no tools and a prepended anchor", async () => {
+		process.env.OMP_DEEPSEEK_ANCHOR_ZERO_TOOLS = "1";
+		try {
+			const app = harness({
+				mode: "dsh",
+				model: { ...deepSeek, api: "openai-completions" },
+			});
+			await app.emit("session_start");
+			const first = await app.emit("before_provider_request", {
+				type: "before_provider_request",
+				payload: {
+					max_tokens: 64000,
+					messages: [
+						{ role: "system", content: "full OMP prompt" },
+						{ role: "user", content: "Inspect the repository." },
+					],
+					tools: [
+						{ type: "function", name: "bash" },
+						{ type: "function", name: "read" },
+						{ type: "function", name: "edit" },
+					],
+				},
+			});
+
+			expect(first).toEqual({
+				max_tokens: 1024,
+				messages: [
+					{
+						role: "system",
+						content: "You are a helpful software engineer assistant.",
+					},
+					{ role: "user", content: DSH_ANCHOR_TEXT },
+					{ role: "user", content: "Inspect the repository." },
+				],
+				tools: [],
+			});
+		} finally {
+			delete process.env.OMP_DEEPSEEK_ANCHOR_ZERO_TOOLS;
+		}
+	});
+
+	test("Responses payloads get a user input item and empty tools", async () => {
+		process.env.OMP_DEEPSEEK_ANCHOR_ZERO_TOOLS = "1";
+		try {
+			const app = harness({ mode: "dsh" });
+			await app.emit("session_start");
+			const first = await app.emit("before_provider_request", {
+				type: "before_provider_request",
+				payload: {
+					instructions: "full OMP prompt",
+					max_output_tokens: 64000,
+					input: [
+						{
+							type: "message",
+							role: "user",
+							content: [{ type: "input_text", text: "Inspect." }],
+						},
+					],
+					tools: [{ type: "function", name: "bash" }],
+				},
+			});
+
+			expect(first).toEqual({
+				instructions: "You are a helpful software engineer assistant.",
+				max_output_tokens: 1024,
+				input: [
+					{
+						type: "message",
+						role: "user",
+						content: [{ type: "input_text", text: DSH_ANCHOR_TEXT }],
+					},
+					{
+						type: "message",
+						role: "user",
+						content: [{ type: "input_text", text: "Inspect." }],
+					},
+				],
+				tools: [],
+			});
+		} finally {
+			delete process.env.OMP_DEEPSEEK_ANCHOR_ZERO_TOOLS;
+		}
+	});
+
+	test("OMP_DEEPSEEK_ANCHOR_TEXT overrides the anchor notice", async () => {
+		process.env.OMP_DEEPSEEK_ANCHOR_ZERO_TOOLS = "1";
+		process.env.OMP_DEEPSEEK_ANCHOR_TEXT = "你是谁";
+		try {
+			const app = harness({ mode: "dsh" });
+			await app.emit("session_start");
+			const first = await app.emit("before_provider_request", {
+				type: "before_provider_request",
+				payload: {
+					instructions: "full",
+					max_output_tokens: 64000,
+					input: [],
+					tools: [{ type: "function", name: "bash" }],
+				},
+			});
+			expect((first as { input: { content: { text: string }[] }[] }).input[0])
+				.toMatchObject({ role: "user", content: [{ type: "input_text", text: "你是谁" }] });
+		} finally {
+			delete process.env.OMP_DEEPSEEK_ANCHOR_ZERO_TOOLS;
+			delete process.env.OMP_DEEPSEEK_ANCHOR_TEXT;
+		}
+	});
+
+	test("OMP_DEEPSEEK_ANCHOR_MAX_TOKENS overrides the bootstrap cap", async () => {
+		process.env.OMP_DEEPSEEK_ANCHOR_MAX_TOKENS = "2048";
+		try {
+			const app = harness();
+			await app.emit("session_start");
+			const first = await app.emit("before_provider_request", {
+				type: "before_provider_request",
+				payload: { max_output_tokens: 64000, tools: ["bash", "read"] },
+			});
+			expect(first).toEqual({ max_output_tokens: 2048, tools: ["bash", "read"] });
+		} finally {
+			delete process.env.OMP_DEEPSEEK_ANCHOR_MAX_TOKENS;
+		}
+	});
+
+	test("prependAnchor leaves unrecognized payloads untouched", () => {
+		expect(prependAnchor({ input: "raw string" }, "anchor")).toEqual({
+			input: "raw string",
+		});
+		expect(prependAnchor(null, "anchor")).toBeNull();
 	});
 });

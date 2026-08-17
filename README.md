@@ -86,23 +86,37 @@ V4 Pro's trajectory anchoring happens at the **first model request**. Switching 
 
 ## How It Works
 
-Two-phase promotion:
+Three-phase promotion (from dsh-anchored-standard, including the post-promotion resident-set fix):
 
 1. **First request**: Minimal persona + `bash`/`read` only + 1024 token cap
-2. **First tool call**: Restore full tool catalog, **keep Minimal persona**
+2. **First durable signal** (first tool call *or* first assistant message — DSH's `either` promotion): restore the **resident catalog**, **keep Minimal persona**. The resident set (`bash`, `read`, `edit`, `write`, `grep`, `glob`, `todo`, `ask`) deliberately excludes heavier tools (`web_search`, `task`, `hub`, `browser`, `lsp`, `debug`, MCP, …): dumping the full catalog after promotion pulls the trajectory back to standard-like behavior (measured post-promotion regression in dsh-anchored-standard). On session resume/reload the same resident surface is enforced for the whole DeepSeek session.
 3. **Agent turn end**: Restore full OMP system prompt
 
 DSH compatibility mode (`OMP_DEEPSEEK_ANCHOR_MODE=dsh`):
 - Compact tool schemas (no `i` parameter on wire)
 - Auto-repair missing `i` on bootstrap tool calls
 - Minimal persona: `"You are a helpful software engineer assistant."`
+- Post-promotion resident catalog instead of the full tool set
 
-Safe mode (default): First-request narrowing only, no persona override.
+Optional zero-tool anchor (`OMP_DEEPSEEK_ANCHOR_ZERO_TOOLS=1`, dsh mode only, experimental — port of `zero-anchored-standard`):
+- First request carries an **empty tool catalog** and a prepended anchor user turn (`"This round is a test. Tools are not open yet; all tools will open next round."`), conditioning the zero-injection "we" trajectory; tools open from the next request/turn.
+
+Safe mode (default): First-request narrowing only, no persona override, full catalog restored after.
+
+## Configuration
+
+| Env var | Default | Effect |
+|---------|---------|--------|
+| `OMP_DEEPSEEK_ANCHOR_MODE` | `safe` | `dsh` enables Minimal persona persistence + resident catalog |
+| `OMP_DEEPSEEK_ANCHOR_ZERO_TOOLS` | unset | `1` (with `dsh`) empties the first request's tool catalog and prepends the anchor turn |
+| `OMP_DEEPSEEK_ANCHOR_TEXT` | DSH anchor text | Custom anchor notice for zero-tool mode |
+| `OMP_DEEPSEEK_ANCHOR_RESIDENT` | built-in daily set | Comma-separated resident tool names (replaces the default; e.g. `bash,read,edit,write,grep,glob,todo,ask,web_search`) |
+| `OMP_DEEPSEEK_ANCHOR_MAX_TOKENS` | `1024` | First-request output cap |
 
 ## Verification
 
 ```bash
-bun run check  # 13 tests, 33 assertions
+bun run check  # 23 tests, 46 assertions
 ```
 
 Real TUI verification in `.dsh-parity-verification.json`:
@@ -136,10 +150,12 @@ The plugin can **replace the `system` field**, but cannot strip content already 
 
 ### Scope of This Implementation
 
-This plugin is **the maximum achievable within OMP's extension API**:
-- ✓ State machine matches DSH (tool promotion ≠ prompt promotion)
+This plugin is **the maximum achievable within OMP's extension API**, now including the reference's post-promotion resident-catalog fix:
+- ✓ State machine matches DSH (tool promotion ≠ prompt promotion; `either` promotion signal)
 - ✓ Minimal persona persists across tool results until `agent_end`
-- ✓ +855% `we` frequency improvement over first-request-only anchoring
+- ✓ Resident catalog after promotion instead of a full-catalog dump (the dsh-anchored-standard post-promotion regression fix)
+- ✓ Optional zero-tool anchor turn (experimental)
+- ✓ +855% `we` frequency improvement over first-request-only anchoring (pre-resident-set measurement)
 - ✗ Cannot reach DSH's 0-1 `let me` purity without OMP core changes
 
 To replicate DSH's **98/99 scores and trajectory purity**, use the original [`dsh-anchored-standard`](https://github.com/xiaobright/dsh-anchored-standard) preset in DeepSeek Harness.
