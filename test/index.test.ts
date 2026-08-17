@@ -6,6 +6,7 @@ import deepSeekAnchor, {
 	DSH_ANCHOR_TEXT,
 	hasPromotionSignal,
 	isDeepSeekModel,
+	parseMaxTokens,
 	prependAnchor,
 } from "../src/index";
 
@@ -126,10 +127,10 @@ describe("model and session detection", () => {
 });
 
 describe("two-phase tool catalog", () => {
-	test("fresh DeepSeek sessions start with bash and read", async () => {
+	test("fresh DeepSeek sessions start with bash and edit", async () => {
 		const app = harness();
 		await app.emit("session_start");
-		expect(app.activeTools()).toEqual(["bash", "read"]);
+		expect(app.activeTools()).toEqual(["bash", "edit"]);
 	});
 
 	test("a tool call restores the exact original catalog", async () => {
@@ -158,13 +159,13 @@ describe("two-phase tool catalog", () => {
 		});
 
 		expect(first).toEqual({
-			max_output_tokens: 1024,
+			max_output_tokens: 64000,
 			tools: [
 				{ type: "function", name: "bash" },
-				{ type: "function", name: "read" },
+				{ type: "function", function: { name: "edit" } },
 			],
 		});
-		expect(app.activeTools()).toEqual(["bash", "read"]);
+		expect(app.activeTools()).toEqual(["bash", "edit"]);
 
 		await app.emit("tool_call", { type: "tool_call", toolName: "read" });
 		expect(app.activeTools()).toEqual([
@@ -200,23 +201,41 @@ describe("two-phase tool catalog", () => {
 		).toBe(payload);
 	});
 
-	test("missing bootstrap tools fails open", async () => {
+	test("missing bash fails open", async () => {
 		const app = harness({ tools: ["read", "edit"] });
 		await app.emit("session_start");
 		expect(app.activeTools()).toEqual(["read", "edit"]);
 		expect(app.warnings).toHaveLength(1);
 	});
+
+	test("bash+read without edit fails open", async () => {
+		const app = harness({ tools: ["bash", "read"] });
+		await app.emit("session_start");
+		expect(app.activeTools()).toEqual(["bash", "read"]);
+		expect(app.warnings[0]).toContain("bash and edit");
+	});
 });
 
 describe("first-request output cap", () => {
-	test("caps Responses and Chat payloads without raising a lower limit", () => {
+	test("leaves the payload unchanged when no cap is set", () => {
+		expect(parseMaxTokens(undefined)).toBeUndefined();
+		expect(parseMaxTokens("")).toBeUndefined();
+		expect(parseMaxTokens("1024")).toBe(1024);
 		expect(
 			capOutputTokens({ max_output_tokens: 64000 }, "openai-responses"),
+		).toEqual({ max_output_tokens: 64000 });
+	});
+
+	test("caps Responses and Chat payloads without raising a lower limit", () => {
+		expect(
+			capOutputTokens({ max_output_tokens: 64000 }, "openai-responses", 1024),
 		).toEqual({ max_output_tokens: 1024 });
 		expect(
-			capOutputTokens({ max_tokens: 64000 }, "openai-completions"),
+			capOutputTokens({ max_tokens: 64000 }, "openai-completions", 1024),
 		).toEqual({ max_tokens: 1024 });
-		expect(capOutputTokens({ max_tokens: 512 }, "openai-completions")).toEqual({
+		expect(
+			capOutputTokens({ max_tokens: 512 }, "openai-completions", 1024),
+		).toEqual({
 			max_tokens: 512,
 		});
 	});
@@ -226,9 +245,9 @@ describe("first-request output cap", () => {
 		await app.emit("session_start");
 		const first = await app.emit("before_provider_request", {
 			type: "before_provider_request",
-			payload: { max_output_tokens: 64000, tools: ["bash", "read"] },
+			payload: { max_output_tokens: 64000, tools: ["bash", "edit"] },
 		});
-		expect(first).toEqual({ max_output_tokens: 1024, tools: ["bash", "read"] });
+		expect(first).toEqual({ max_output_tokens: 64000, tools: ["bash", "edit"] });
 
 		await app.emit("tool_call", { type: "tool_call", toolName: "read" });
 		expect(app.activeTools()).toEqual(["bash", "read", "edit", "grep"]);
@@ -241,7 +260,10 @@ describe("first-request output cap", () => {
 			type: "before_provider_request",
 			payload: secondPayload,
 		});
-		expect(second).toEqual({ max_output_tokens: 1024, tools: ["bash", "read", "edit"] });
+		expect(second).toEqual({
+			max_output_tokens: 64000,
+			tools: ["bash", "read", "edit"],
+		});
 
 		await app.emit("agent_end", { type: "agent_end", messages: [] });
 		const thirdPayload = {
@@ -293,7 +315,7 @@ describe("DSH compatibility mode", () => {
 
 		expect(first).toEqual({
 			instructions: "You are a helpful software engineer assistant.",
-			max_output_tokens: 1024,
+			max_output_tokens: 64000,
 			tools: [
 				{
 					type: "function",
@@ -307,12 +329,16 @@ describe("DSH compatibility mode", () => {
 				},
 				{
 					type: "function",
-					name: "read",
-					description: "Read a text file.",
+					name: "edit",
+					description: "Replace a string in a text file.",
 					parameters: {
 						type: "object",
-						properties: { path: { type: "string" } },
-						required: ["path"],
+						properties: {
+							path: { type: "string" },
+							old_string: { type: "string" },
+							new_string: { type: "string" },
+						},
+						required: ["path", "old_string", "new_string"],
 					},
 				},
 			],
@@ -335,12 +361,14 @@ describe("DSH compatibility mode", () => {
 		const concurrent = await app.emit("tool_call", {
 			type: "tool_call",
 			toolCallId: "call-2",
-			toolName: "read",
-			input: { path: "README.md" },
+			toolName: "edit",
+			input: { path: "README.md", old_string: "a", new_string: "b" },
 		});
 		expect(concurrent).toEqual({
 			input: {
 				path: "README.md",
+				old_string: "a",
+				new_string: "b",
 				i: "Bootstrap repository inspection",
 			},
 		});
@@ -374,7 +402,7 @@ describe("DSH compatibility mode", () => {
 
 		expect(first).toMatchObject({
 			instructions: "You are a helpful software engineer assistant.",
-			max_output_tokens: 1024,
+			max_output_tokens: 64000,
 			tools: [
 				{
 					type: "function",
@@ -384,6 +412,20 @@ describe("DSH compatibility mode", () => {
 						type: "object",
 						properties: { command: { type: "string" } },
 						required: ["command"],
+					},
+				},
+				{
+					type: "function",
+					name: "edit",
+					description: "Replace a string in a text file.",
+					parameters: {
+						type: "object",
+						properties: {
+							path: { type: "string" },
+							old_string: { type: "string" },
+							new_string: { type: "string" },
+						},
+						required: ["path", "old_string", "new_string"],
 					},
 				},
 			],
@@ -416,7 +458,7 @@ describe("DSH compatibility mode", () => {
 
 		expect(second).toMatchObject({
 			instructions: "You are a helpful software engineer assistant.",
-			max_output_tokens: 1024,
+			max_output_tokens: 64000,
 		});
 		expect((second as { tools: unknown[] }).tools).toHaveLength(2);
 
@@ -466,7 +508,7 @@ describe("DSH compatibility mode", () => {
 		});
 
 		expect(first).toEqual({
-			max_tokens: 1024,
+			max_tokens: 64000,
 			messages: [
 				{
 					role: "system",
@@ -499,7 +541,7 @@ describe("DSH resident catalog (post-promotion)", () => {
 			tools: ["bash", "read", "edit", "write", "grep", "web_search", "task"],
 		});
 		await app.emit("session_start");
-		expect(app.activeTools()).toEqual(["bash", "read"]);
+		expect(app.activeTools()).toEqual(["bash", "edit"]);
 
 		await app.emit("tool_call", {
 			type: "tool_call",
@@ -596,7 +638,7 @@ describe("zero-tool anchor mode", () => {
 			});
 
 			expect(first).toEqual({
-				max_tokens: 1024,
+				max_tokens: 64000,
 				messages: [
 					{
 						role: "system",
@@ -635,7 +677,7 @@ describe("zero-tool anchor mode", () => {
 
 			expect(first).toEqual({
 				instructions: "You are a helpful software engineer assistant.",
-				max_output_tokens: 1024,
+				max_output_tokens: 64000,
 				input: [
 					{
 						type: "message",
@@ -678,16 +720,16 @@ describe("zero-tool anchor mode", () => {
 		}
 	});
 
-	test("OMP_DEEPSEEK_ANCHOR_MAX_TOKENS overrides the bootstrap cap", async () => {
+	test("OMP_DEEPSEEK_ANCHOR_MAX_TOKENS opts into a first-request cap", async () => {
 		process.env.OMP_DEEPSEEK_ANCHOR_MAX_TOKENS = "2048";
 		try {
 			const app = harness();
 			await app.emit("session_start");
 			const first = await app.emit("before_provider_request", {
 				type: "before_provider_request",
-				payload: { max_output_tokens: 64000, tools: ["bash", "read"] },
+				payload: { max_output_tokens: 64000, tools: ["bash", "edit"] },
 			});
-			expect(first).toEqual({ max_output_tokens: 2048, tools: ["bash", "read"] });
+			expect(first).toEqual({ max_output_tokens: 2048, tools: ["bash", "edit"] });
 		} finally {
 			delete process.env.OMP_DEEPSEEK_ANCHOR_MAX_TOKENS;
 		}

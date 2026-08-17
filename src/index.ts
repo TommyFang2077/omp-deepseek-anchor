@@ -1,8 +1,46 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
-const BOOTSTRAP_TOOLS = ["bash", "read"] as const;
-const BOOTSTRAP_MAX_TOKENS = 1024;
+/**
+ * OMP analogue of DSH Minimal's real pair (`bash` + `str_replace_editor`).
+ * Issue #11 of dsh-anchored-standard measured this schema anchoring 5/5 at
+ * the adapter-default maxTokens; standard-family `bash`+`read` fell
+ * standard-like 11/11.
+ */
+const BOOTSTRAP_TOOLS = ["bash", "edit"] as const;
 const DSH_MINIMAL_SYSTEM = "You are a helpful software engineer assistant.";
+
+const BOOTSTRAP_TOOL_SCHEMAS: Record<
+	(typeof BOOTSTRAP_TOOLS)[number],
+	{
+		description: string;
+		parameters: {
+			type: "object";
+			properties: Record<string, { type: "string" }>;
+			required: string[];
+		};
+	}
+> = {
+	bash: {
+		description: "Run a command in a persistent shell.",
+		parameters: {
+			type: "object",
+			properties: { command: { type: "string" } },
+			required: ["command"],
+		},
+	},
+	edit: {
+		description: "Replace a string in a text file.",
+		parameters: {
+			type: "object",
+			properties: {
+				path: { type: "string" },
+				old_string: { type: "string" },
+				new_string: { type: "string" },
+			},
+			required: ["path", "old_string", "new_string"],
+		},
+	},
+};
 
 /**
  * Zero-tool anchor notice (port of dsh-anchored-standard's `ANCHOR_TEXT`):
@@ -35,7 +73,7 @@ const RESIDENT_FALLBACK_TOOLS = [
 type AnchorMode = "safe" | "dsh";
 
 function isBootstrapTool(name: string): boolean {
-	return name === "bash" || name === "read";
+	return (BOOTSTRAP_TOOLS as readonly string[]).includes(name);
 }
 
 type RequestPayload = Record<string, unknown>;
@@ -57,8 +95,9 @@ export function hasPromotionSignal(
 export function capOutputTokens(
 	payload: unknown,
 	api: string | undefined,
-	limit = BOOTSTRAP_MAX_TOKENS,
+	limit?: number,
 ): unknown {
+	if (limit === undefined) return payload;
 	if (typeof payload !== "object" || payload === null || Array.isArray(payload))
 		return payload;
 
@@ -127,11 +166,18 @@ export function prependAnchor(payload: unknown, text: string): unknown {
 	return payload;
 }
 
-function parseMaxTokens(): number {
-	const raw = process.env.OMP_DEEPSEEK_ANCHOR_MAX_TOKENS;
-	if (raw === undefined || raw.trim() === "") return BOOTSTRAP_MAX_TOKENS;
+/**
+ * Optional first-request output cap. Unset means the adapter/model default
+ * flows through — DSH's `bootstrapMaxTokens` is opt-in for the same reason:
+ * the Minimal tool schema anchors without a cap, and a 1024 cap on OMP makes
+ * `stopReason: length` look like context overflow and trips snapcompact.
+ */
+export function parseMaxTokens(
+	raw = process.env.OMP_DEEPSEEK_ANCHOR_MAX_TOKENS,
+): number | undefined {
+	if (raw === undefined || raw.trim() === "") return undefined;
 	const parsed = Number(raw);
-	return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : BOOTSTRAP_MAX_TOKENS;
+	return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 function readEnvText(name: string, fallback: string): string {
@@ -157,13 +203,35 @@ function filterAvailable(names: readonly string[], available: string[]): string[
 	return [...new Set(names)].filter((name) => have.has(name));
 }
 
+function compactBootstrapTool(entry: RequestPayload, name: string): RequestPayload[] {
+	if (!isBootstrapTool(name)) return [];
+	const schema = BOOTSTRAP_TOOL_SCHEMAS[name as (typeof BOOTSTRAP_TOOLS)[number]];
+	const nested = entry.function;
+	const nestedFunction =
+		typeof nested === "object" && nested !== null && !Array.isArray(nested)
+			? (nested as RequestPayload)
+			: undefined;
+	return nestedFunction
+		? [
+				{
+					...entry,
+					function: {
+						...nestedFunction,
+						description: schema.description,
+						parameters: schema.parameters,
+					},
+				},
+			]
+		: [{ ...entry, description: schema.description, parameters: schema.parameters }];
+}
+
 function bootstrapPayload(
 	payload: unknown,
 	api: string | undefined,
 	mode: AnchorMode,
 	narrowTools: boolean,
 	zeroTools: boolean,
-	limit = BOOTSTRAP_MAX_TOKENS,
+	limit?: number,
 ): unknown {
 	const capped = capOutputTokens(payload, api, limit);
 	if (typeof capped !== "object" || capped === null || Array.isArray(capped))
@@ -194,22 +262,7 @@ function bootstrapPayload(
 								: undefined;
 					if (name === undefined || !isBootstrapTool(name)) return [];
 					if (mode === "safe") return [tool];
-
-					const description =
-						name === "bash"
-							? "Run a command in a persistent shell."
-							: "Read a text file.";
-					const parameters = {
-						type: "object",
-						properties:
-							name === "bash"
-								? { command: { type: "string" } }
-								: { path: { type: "string" } },
-						required: [name === "bash" ? "command" : "path"],
-					};
-					return nestedFunction
-						? [{ ...entry, function: { ...nestedFunction, description, parameters } }]
-						: [{ ...entry, description, parameters }];
+					return compactBootstrapTool(entry, name);
 				});
 
 	const transformed: RequestPayload = { ...request, tools };
@@ -316,7 +369,7 @@ export default function deepSeekAnchor(
 			if (!warnedMissingTools) {
 				warnedMissingTools = true;
 				pi.logger.warn(
-					"DeepSeek anchor disabled: fresh sessions require active bash and read tools",
+					"DeepSeek anchor disabled: fresh sessions require active bash and edit tools",
 				);
 			}
 			if (toolsNarrowed) await promoteTools();
