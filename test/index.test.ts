@@ -21,6 +21,11 @@ const deepSeek = {
 	id: "deepseek-v4-pro",
 	api: "openai-responses",
 };
+const glmViaDeepSeekProvider = {
+	provider: "ccs-codex-deepseek",
+	id: "glm-5.3",
+	api: "openai-responses",
+};
 const claude = {
 	provider: "anthropic",
 	id: "claude-sonnet-5",
@@ -117,7 +122,7 @@ function harness(
 }
 
 describe("model and session detection", () => {
-	test("matches DeepSeek in either provider or model id", () => {
+	test("matches DeepSeek by model id, not a shared provider route", () => {
 		expect(
 			isDeepSeekModel(deepSeek as unknown as ExtensionContext["model"]),
 		).toBe(true);
@@ -128,8 +133,26 @@ describe("model and session detection", () => {
 			} as unknown as ExtensionContext["model"]),
 		).toBe(true);
 		expect(
+			isDeepSeekModel(
+				glmViaDeepSeekProvider as unknown as ExtensionContext["model"],
+			),
+		).toBe(false);
+		expect(
 			isDeepSeekModel(claude as unknown as ExtensionContext["model"]),
 		).toBe(false);
+	});
+
+	test("leaves GLM-5.3 at max thinking unmodified through a DeepSeek route", async () => {
+		const app = harness({ model: glmViaDeepSeekProvider, mode: "dsh" });
+		await app.emit("session_start");
+		expect(app.activeTools()).toEqual(["bash", "read", "edit", "grep"]);
+		const payload = { instructions: "full prompt", tools: ["bash", "read", "edit"] };
+		expect(
+			await app.emit("before_provider_request", {
+				type: "before_provider_request",
+				payload,
+			}),
+		).toBe(payload);
 	});
 
 	test("uses a durable assistant message as the promotion signal", () => {

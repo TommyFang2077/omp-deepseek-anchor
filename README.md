@@ -58,14 +58,17 @@ First DeepSeek session will bootstrap with Minimal persona. Non-DeepSeek models 
 
 The plugin activates **only** when both conditions are met:
 
-1. ✓ Model matches `/deepseek/i` (provider or id contains "deepseek", case-insensitive)
+1. ✓ Model **id** matches `/deepseek/i` (case-insensitive)
 2. ✓ Session has **no assistant messages yet** (fresh session only)
+
+Provider names are deliberately ignored: a routed `ccs-codex-deepseek/glm-5.3` session — including `--thinking max` — is not a DeepSeek model, so this plugin leaves its prompt and tool catalog unchanged.
 
 ### When It Works
 
 | Scenario | Activates? |
 |----------|-----------|
 | New session with `--model ccs-codex-deepseek/...` | ✓ Yes |
+| GLM-5.3 routed through `ccs-codex-deepseek` | ✗ No — model id is not DeepSeek |
 | Empty session + `/model` switch to DeepSeek | ✓ Yes |
 | Mid-conversation `/model` switch to DeepSeek | ✗ No — trajectory already anchored |
 | DeepSeek session switched to non-DeepSeek | Deactivates immediately |

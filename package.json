@@ -1,6 +1,6 @@
 {
   "name": "omp-deepseek-anchor",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Give DeepSeek a bash+edit first request (DSH Minimal pair), then restore the OMP tool catalog",
   "type": "module",
   "license": "MIT",

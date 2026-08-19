@@ -83,9 +83,13 @@ export function isBootstrapTool(name: string): boolean {
 }
 
 export type RequestPayload = Record<string, unknown>;
+/**
+ * Match the selected model identity, never its routing provider: shared
+ * DeepSeek routes can also carry unrelated models such as GLM-5.3.
+ */
 export function isDeepSeekModel(model: ExtensionContext["model"]): boolean {
 	if (!model) return false;
-	return /deepseek/i.test(`${model.provider}/${model.id}`);
+	return /deepseek/i.test(model.id);
 }
 
 /**

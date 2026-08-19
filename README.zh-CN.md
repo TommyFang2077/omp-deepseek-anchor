@@ -56,14 +56,17 @@ omp --model ccs-codex-deepseek/deepseek-v4-pro --thinking max
 
 插件**仅在**同时满足以下两个条件时激活：
 
-1. ✓ 模型匹配 `/deepseek/i`（provider 或 id 包含"deepseek"，不区分大小写）
+1. ✓ 模型 **id** 匹配 `/deepseek/i`（不区分大小写）
 2. ✓ 会话**尚未有 assistant 消息**（仅限新会话）
+
+Provider 名称被刻意忽略：即使 `glm-5.3` 经 `ccs-codex-deepseek` 路由（包括 `--thinking max`），也不属于 DeepSeek 模型；插件不会改写其 prompt 或工具目录。
 
 ### 何时生效
 
 | 场景 | 是否激活？ |
 |------|-----------|
 | 使用 `--model ccs-codex-deepseek/...` 启动新会话 | ✓ 是 |
+| `ccs-codex-deepseek` 路由的 GLM-5.3 | ✗ 否 — 模型 id 不是 DeepSeek |
 | 空会话 + `/model` 切换到 DeepSeek | ✓ 是 |
 | 对话中途 `/model` 切换到 DeepSeek | ✗ 否 — 轨迹已锚定 |
 | DeepSeek 会话切换到非 DeepSeek | 立即停用 |
